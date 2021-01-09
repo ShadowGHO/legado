@@ -6,12 +6,14 @@ import io.legado.app.App
 import io.legado.app.R
 import io.legado.app.base.BaseService
 import io.legado.app.constant.AppConst
+import io.legado.app.constant.EventBus
 import io.legado.app.constant.IntentAction
 import io.legado.app.help.AppConfig
 import io.legado.app.help.IntentHelp
 import io.legado.app.help.coroutine.CompositeCoroutine
 import io.legado.app.service.help.CheckSource
 import io.legado.app.ui.book.source.manage.BookSourceActivity
+import io.legado.app.utils.postEvent
 import kotlinx.coroutines.asCoroutineDispatcher
 import org.jetbrains.anko.toast
 import java.util.concurrent.Executors
@@ -24,10 +26,27 @@ class CheckSourceService : BaseService() {
     private val allIds = ArrayList<String>()
     private val checkedIds = ArrayList<String>()
     private var processIndex = 0
+    private var notificationMsg = ""
+    private val notificationBuilder by lazy {
+        NotificationCompat.Builder(this, AppConst.channelIdReadAloud)
+            .setSmallIcon(R.drawable.ic_network_check)
+            .setOngoing(true)
+            .setContentTitle(getString(R.string.check_book_source))
+            .setContentIntent(
+                IntentHelp.activityPendingIntent<BookSourceActivity>(this, "activity")
+            )
+            .addAction(
+                R.drawable.ic_stop_black_24dp,
+                getString(R.string.cancel),
+                IntentHelp.servicePendingIntent<CheckSourceService>(this, IntentAction.stop)
+            )
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+    }
 
     override fun onCreate() {
         super.onCreate()
-        updateNotification(0, getString(R.string.start))
+        notificationMsg = getString(R.string.start)
+        upNotification()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -44,6 +63,7 @@ class CheckSourceService : BaseService() {
         super.onDestroy()
         tasks.clear()
         searchPool.close()
+        postEvent(EventBus.CHECK_SOURCE_DONE, 0)
     }
 
     private fun check(ids: List<String>) {
@@ -57,7 +77,8 @@ class CheckSourceService : BaseService() {
         allIds.addAll(ids)
         processIndex = 0
         threadCount = min(allIds.size, threadCount)
-        updateNotification(0, getString(R.string.progress_show, 0, allIds.size))
+        notificationMsg = getString(R.string.progress_show, "", 0, allIds.size)
+        upNotification()
         for (i in 0 until threadCount) {
             check()
         }
@@ -74,27 +95,26 @@ class CheckSourceService : BaseService() {
         execute {
             if (index < allIds.size) {
                 val sourceUrl = allIds[index]
-                App.db.bookSourceDao().getBookSource(sourceUrl)?.let { source ->
+                App.db.bookSourceDao.getBookSource(sourceUrl)?.let { source ->
                     if (source.searchUrl.isNullOrEmpty()) {
-                        onNext(sourceUrl)
+                        onNext(sourceUrl, source.bookSourceName)
                     } else {
                         CheckSource(source).check(this, searchPool) {
-                            onNext(it)
+                            onNext(it, source.bookSourceName)
                         }
                     }
-                } ?: onNext(sourceUrl)
+                } ?: onNext(sourceUrl, "")
             }
         }
     }
 
-    private fun onNext(sourceUrl: String) {
+    private fun onNext(sourceUrl: String, sourceName: String) {
         synchronized(this) {
             check()
             checkedIds.add(sourceUrl)
-            updateNotification(
-                checkedIds.size,
-                getString(R.string.progress_show, checkedIds.size, allIds.size)
-            )
+            notificationMsg =
+                getString(R.string.progress_show, sourceName, checkedIds.size, allIds.size)
+            upNotification()
             if (processIndex >= allIds.size + threadCount - 1) {
                 stopSelf()
             }
@@ -104,24 +124,11 @@ class CheckSourceService : BaseService() {
     /**
      * 更新通知
      */
-    private fun updateNotification(state: Int, msg: String) {
-        val builder = NotificationCompat.Builder(this, AppConst.channelIdReadAloud)
-            .setSmallIcon(R.drawable.ic_network_check)
-            .setOngoing(true)
-            .setContentTitle(getString(R.string.check_book_source))
-            .setContentText(msg)
-            .setContentIntent(
-                IntentHelp.activityPendingIntent<BookSourceActivity>(this, "activity")
-            )
-            .addAction(
-                R.drawable.ic_stop_black_24dp,
-                getString(R.string.cancel),
-                IntentHelp.servicePendingIntent<CheckSourceService>(this, IntentAction.stop)
-            )
-        builder.setProgress(allIds.size, state, false)
-        builder.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-        val notification = builder.build()
-        startForeground(112202, notification)
+    private fun upNotification() {
+        notificationBuilder.setContentText(notificationMsg)
+        notificationBuilder.setProgress(allIds.size, checkedIds.size, false)
+        postEvent(EventBus.CHECK_SOURCE, notificationMsg)
+        startForeground(112202, notificationBuilder.build())
     }
 
 }

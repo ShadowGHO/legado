@@ -1,19 +1,19 @@
 package io.legado.app.help.http
 
-import io.legado.app.constant.AppConst
-import io.legado.app.help.http.api.HttpGetApi
-import io.legado.app.utils.NetworkUtils
 import kotlinx.coroutines.suspendCancellableCoroutine
-import okhttp3.ConnectionSpec
-import okhttp3.Interceptor
-import okhttp3.OkHttpClient
-import okhttp3.Protocol
-import retrofit2.Retrofit
+import okhttp3.*
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 @Suppress("unused")
 object HttpHelper {
+
+    private val proxyClientCache: ConcurrentHashMap<String, OkHttpClient> by lazy {
+        ConcurrentHashMap()
+    }
 
     val client: OkHttpClient by lazy {
 
@@ -39,65 +39,48 @@ object HttpHelper {
         builder.build()
     }
 
-    fun simpleGet(url: String, encode: String? = null): String? {
-        NetworkUtils.getBaseUrl(url)?.let { baseUrl ->
-            val response = getApiService<HttpGetApi>(baseUrl, encode)
-                .get(url, mapOf(Pair(AppConst.UA_NAME, AppConst.userAgent)))
-                .execute()
-            return response.body()
+    /**
+     * 缓存代理okHttp
+     */
+    fun getProxyClient(proxy: String? = null): OkHttpClient {
+        if (proxy.isNullOrBlank()) {
+            return client
         }
-        return null
-    }
-
-    fun getBytes(url: String, referer: String): ByteArray? {
-        NetworkUtils.getBaseUrl(url)?.let { baseUrl ->
-            val headers =
-                mapOf(Pair(AppConst.UA_NAME, AppConst.userAgent), Pair("Referer", referer))
-            return getByteRetrofit(baseUrl)
-                .create(HttpGetApi::class.java)
-                .getMapByte(url, mapOf(), headers)
-                .execute()
-                .body()
+        proxyClientCache[proxy]?.let {
+            return it
         }
-        return null
-    }
-
-    suspend fun simpleGetAsync(url: String, encode: String? = null): String? {
-        NetworkUtils.getBaseUrl(url)?.let { baseUrl ->
-            val response = getApiService<HttpGetApi>(baseUrl, encode)
-                .getAsync(url, mapOf(Pair(AppConst.UA_NAME, AppConst.userAgent)))
-            return response.body()
+        val r = Regex("(http|socks4|socks5)://(.*):(\\d{2,5})(@.*@.*)?")
+        val ms = r.findAll(proxy)
+        val group = ms.first()
+        var username = ""       //代理服务器验证用户名
+        var password = ""       //代理服务器验证密码
+        val type = if (group.groupValues[1] == "http") "http" else "socks"
+        val host = group.groupValues[2]
+        val port = group.groupValues[3].toInt()
+        if (group.groupValues[4] != "") {
+            username = group.groupValues[4].split("@")[1]
+            password = group.groupValues[4].split("@")[2]
         }
-        return null
-    }
-
-    suspend fun simpleGetBytesAsync(url: String): ByteArray? {
-        NetworkUtils.getBaseUrl(url)?.let { baseUrl ->
-            return getByteRetrofit(baseUrl)
-                .create(HttpGetApi::class.java)
-                .getMapByteAsync(url, mapOf(), mapOf(Pair(AppConst.UA_NAME, AppConst.userAgent)))
-                .body()
+        if (type != "direct" && host != "") {
+            val builder = client.newBuilder()
+            if (type == "http") {
+                builder.proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress(host, port)))
+            } else {
+                builder.proxy(Proxy(Proxy.Type.SOCKS, InetSocketAddress(host, port)))
+            }
+            if (username != "" && password != "") {
+                builder.proxyAuthenticator { _, response -> //设置代理服务器账号密码
+                    val credential: String = Credentials.basic(username, password)
+                    response.request.newBuilder()
+                        .header("Proxy-Authorization", credential)
+                        .build()
+                }
+            }
+            val proxyClient = builder.build()
+            proxyClientCache[proxy] = proxyClient
+            return proxyClient
         }
-        return null
-    }
-
-    inline fun <reified T> getApiService(baseUrl: String, encode: String? = null): T {
-        return getRetrofit(baseUrl, encode).create(T::class.java)
-    }
-
-    fun getRetrofit(baseUrl: String, encode: String? = null): Retrofit {
-        return Retrofit.Builder().baseUrl(baseUrl)
-            //增加返回值为字符串的支持(以实体类返回)
-            .addConverterFactory(EncodeConverter(encode))
-            .client(client)
-            .build()
-    }
-
-    fun getByteRetrofit(baseUrl: String): Retrofit {
-        return Retrofit.Builder().baseUrl(baseUrl)
-            .addConverterFactory(ByteConverter())
-            .client(client)
-            .build()
+        return client
     }
 
     private fun getHeaderInterceptor(): Interceptor {
@@ -112,21 +95,22 @@ object HttpHelper {
         }
     }
 
-    suspend fun ajax(params: AjaxWebView.AjaxParams): Res =
+    suspend fun ajax(params: AjaxWebView.AjaxParams): StrResponse =
         suspendCancellableCoroutine { block ->
             val webView = AjaxWebView()
             block.invokeOnCancellation {
                 webView.destroyWebView()
             }
             webView.callback = object : AjaxWebView.Callback() {
-                override fun onResult(response: Res) {
+                override fun onResult(response: StrResponse) {
+
                     if (!block.isCompleted)
                         block.resume(response)
                 }
 
                 override fun onError(error: Throwable) {
                     if (!block.isCompleted)
-                        block.resume(Res(params.url, error.localizedMessage))
+                        block.cancel(error)
                 }
             }
             webView.load(params)

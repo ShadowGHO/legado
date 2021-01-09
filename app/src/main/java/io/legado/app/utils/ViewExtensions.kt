@@ -7,7 +7,6 @@ import android.graphics.Canvas
 import android.os.Build
 import android.view.View
 import android.view.View.*
-import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.RadioGroup
 import android.widget.SeekBar
@@ -80,13 +79,6 @@ fun View.screenshot(): Bitmap? {
     }.getOrNull()
 }
 
-fun View.setMargin(left: Int, top: Int, right: Int, bottom: Int) {
-    if (layoutParams is ViewGroup.MarginLayoutParams) {
-        (layoutParams as ViewGroup.MarginLayoutParams).setMargins(left, top, right, bottom)
-        requestLayout()
-    }
-}
-
 fun SeekBar.progressAdd(int: Int) {
     progress += int
 }
@@ -115,13 +107,11 @@ fun RadioGroup.checkByIndex(index: Int) {
 
 @SuppressLint("RestrictedApi")
 fun PopupMenu.show(x: Int, y: Int) {
-    try {
+    kotlin.runCatching {
         val field: Field = this.javaClass.getDeclaredField("mPopup")
         field.isAccessible = true
         (field.get(this) as MenuPopupHelper).show(x, y)
-    } catch (e: NoSuchFieldException) {
-        e.printStackTrace()
-    } catch (e: IllegalAccessException) {
-        e.printStackTrace()
+    }.onFailure {
+        it.printStackTrace()
     }
 }
